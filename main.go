@@ -14,6 +14,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v4"
 )
@@ -27,7 +28,12 @@ var (
 )
 
 const (
-	q = `SELECT host, max(usage), min(usage) FROM cpu_usage WHERE host = $1 AND ts BETWEEN $2 AND $3 GROUP BY host`
+	pattern = "2006-01-02 15:04:05"
+	q       = `SELECT host, DATE_TRUNC('minute', ts), max(usage), min(usage)
+	FROM cpu_usage
+	WHERE host = $1
+	AND ts BETWEEN $2 AND $3
+	GROUP BY host, DATE_TRUNC('minute', ts)`
 )
 
 func main() {
@@ -67,16 +73,26 @@ func main() {
 			log.Fatalf("reading record from csv: %s", err)
 		}
 
+		// start, err := time.Parse(pattern, rec[1])
+		// if err != nil {
+		// 	log.Fatalf("parsing timestamp: %s", err)
+		// }
+		// end, err := time.Parse(pattern, rec[2])
+		// if err != nil {
+		// 	log.Fatalf("parsing timestamp: %s", err)
+		// }
+
 		rows, err := conn.Query(ctx, q, rec[0], rec[1], rec[2])
 		if err != nil {
 			log.Fatalf("querying database: %s", err)
 		}
 
 		hostname := ""
+		ts := time.Time{}
 		var max, min float64
 		for rows.Next() {
-			rows.Scan(&hostname, &max, &min)
-			fmt.Println(hostname, max, min)
+			rows.Scan(&hostname, &ts, &max, &min)
+			fmt.Println(hostname, ts, max, min)
 		}
 	}
 }

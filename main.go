@@ -15,6 +15,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v4"
@@ -44,6 +45,8 @@ type Report struct {
 	maxTime    time.Duration
 	avgTime    time.Duration
 	medianTime time.Duration
+	minHeap    *MinHeap
+	maxHeap    *MaxHeap
 }
 
 func main() {
@@ -74,36 +77,23 @@ func main() {
 
 	fmt.Println(strings.Join(head, ", "))
 
-	report := Report{}
+	report := &Report{}
 	minHeap := &MinHeap{}
 	maxHeap := &MaxHeap{}
 	heap.Init(minHeap)
 	heap.Init(maxHeap)
+	report.minHeap = minHeap
+	report.maxHeap = maxHeap
 
-	for {
-		rec, err := reader.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			log.Fatalf("reading record from csv: %s", err)
-		}
+	wg := &sync.WaitGroup{}
+	wg.Add(1)
+	recs := make(chan []string)
+	e := make(chan error)
 
-		start := time.Now()
-		_, err = conn.Query(ctx, q, rec[0], rec[1], rec[2])
-		if err != nil {
-			log.Fatalf("querying database: %s", err)
-		}
-		dur := time.Since(start)
-		heap.Push(minHeap, dur)
-		heap.Push(maxHeap, dur)
+	go ReadRecords(reader, recs, e)
+	go DoQuery(ctx, conn, report, wg, recs, e)
 
-		report.count += 1
-		report.totalTime += dur
-		report.avgTime = time.Duration(int(report.totalTime) / report.count)
-		report.minTime = minDuration(report.minTime, dur)
-		report.maxTime = maxDuration(report.maxTime, dur)
-	}
+	wg.Wait()
 
 	// calculate median
 	min, max := minHeap.Pop().(time.Duration), maxHeap.Pop().(time.Duration)
@@ -113,6 +103,41 @@ func main() {
 	report.medianTime = (min + max) / 2
 
 	fmt.Printf("%+v\n", report)
+}
+
+func ReadRecords(reader *csv.Reader, out chan<- []string, e chan<- error) {
+	for {
+		rec, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			e <- fmt.Errorf("reading record from csv: %s", err)
+		}
+		out <- rec
+	}
+	close(out)
+	close(e)
+}
+
+func DoQuery(ctx context.Context, conn *pgx.Conn, rep *Report, wg *sync.WaitGroup, recs <-chan []string, e chan<- error) {
+	for rec := range recs {
+		start := time.Now()
+		_, err := conn.Query(ctx, q, rec[0], rec[1], rec[2])
+		if err != nil {
+			e <- fmt.Errorf("querying database: %s", err)
+		}
+		dur := time.Since(start)
+		heap.Push(rep.minHeap, dur)
+		heap.Push(rep.maxHeap, dur)
+
+		rep.count += 1
+		rep.totalTime += dur
+		rep.avgTime = time.Duration(int(rep.totalTime) / rep.count)
+		rep.minTime = minDuration(rep.minTime, dur)
+		rep.maxTime = maxDuration(rep.maxTime, dur)
+	}
+	wg.Done()
 }
 
 func minDuration(a, b time.Duration) time.Duration {

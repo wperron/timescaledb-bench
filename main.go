@@ -6,6 +6,7 @@ package main
 // a single worker can handle multiple hosts
 
 import (
+	"container/heap"
 	"context"
 	"encoding/csv"
 	"flag"
@@ -36,6 +37,15 @@ const (
 	GROUP BY host, DATE_TRUNC('minute', ts)`
 )
 
+type Report struct {
+	count      int
+	totalTime  time.Duration
+	minTime    time.Duration
+	maxTime    time.Duration
+	avgTime    time.Duration
+	medianTime time.Duration
+}
+
 func main() {
 	flag.Parse()
 
@@ -64,6 +74,12 @@ func main() {
 
 	fmt.Println(strings.Join(head, ", "))
 
+	report := Report{}
+	minHeap := &MinHeap{}
+	maxHeap := &MaxHeap{}
+	heap.Init(minHeap)
+	heap.Init(maxHeap)
+
 	for {
 		rec, err := reader.Read()
 		if err == io.EOF {
@@ -73,26 +89,42 @@ func main() {
 			log.Fatalf("reading record from csv: %s", err)
 		}
 
-		// start, err := time.Parse(pattern, rec[1])
-		// if err != nil {
-		// 	log.Fatalf("parsing timestamp: %s", err)
-		// }
-		// end, err := time.Parse(pattern, rec[2])
-		// if err != nil {
-		// 	log.Fatalf("parsing timestamp: %s", err)
-		// }
-
-		rows, err := conn.Query(ctx, q, rec[0], rec[1], rec[2])
+		start := time.Now()
+		_, err = conn.Query(ctx, q, rec[0], rec[1], rec[2])
 		if err != nil {
 			log.Fatalf("querying database: %s", err)
 		}
+		dur := time.Since(start)
+		heap.Push(minHeap, dur)
+		heap.Push(maxHeap, dur)
 
-		hostname := ""
-		ts := time.Time{}
-		var max, min float64
-		for rows.Next() {
-			rows.Scan(&hostname, &ts, &max, &min)
-			fmt.Println(hostname, ts, max, min)
-		}
+		report.count += 1
+		report.totalTime += dur
+		report.avgTime = time.Duration(int(report.totalTime) / report.count)
+		report.minTime = minDuration(report.minTime, dur)
+		report.maxTime = maxDuration(report.maxTime, dur)
 	}
+
+	// calculate median
+	min, max := minHeap.Pop().(time.Duration), maxHeap.Pop().(time.Duration)
+	for min < max {
+		min, max = minHeap.Pop().(time.Duration), maxHeap.Pop().(time.Duration)
+	}
+	report.medianTime = (min + max) / 2
+
+	fmt.Printf("%+v\n", report)
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxDuration(a, b time.Duration) time.Duration {
+	if a > b {
+		return a
+	}
+	return b
 }

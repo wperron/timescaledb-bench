@@ -1,5 +1,10 @@
 package main
 
+// Benchmark query performance on a timescale instance
+// should be able to use multiple workers concurrently
+// each host should always be executed by the same worker
+// a single worker can handle multiple hosts
+
 import (
 	"context"
 	"encoding/csv"
@@ -18,11 +23,11 @@ var (
 	user = flag.String("user", "", "TimescaleDB username")
 	pwd  = flag.String("password", "", "TimescaleSB password")
 	db   = flag.String("db", "", "TimescaleDB database name")
-	file = flag.String("file", "", "Source data filename")
+	file = flag.String("file", "", "Filename containing the query parameters")
 )
 
 const (
-	insert = `INSERT INTO cpu_usage (ts, host, usage) VALUES ($1, $2, $3)`
+	q = `SELECT host, max(usage), min(usage) FROM cpu_usage WHERE host = $1 AND ts BETWEEN $2 AND $3 GROUP BY host`
 )
 
 func main() {
@@ -40,7 +45,7 @@ func main() {
 
 	fd, err := os.Open(*file)
 	if err != nil {
-		log.Fatalf("opening source data file: %s", err)
+		log.Fatalf("opening query params file: %s", err)
 	}
 
 	reader := csv.NewReader(fd)
@@ -62,9 +67,16 @@ func main() {
 			log.Fatalf("reading record from csv: %s", err)
 		}
 
-		_, err = conn.Exec(ctx, insert, rec[0], rec[1], rec[2])
+		rows, err := conn.Query(ctx, q, rec[0], rec[1], rec[2])
 		if err != nil {
-			log.Fatalf("inserting into database: %s", err)
+			log.Fatalf("querying database: %s", err)
+		}
+
+		hostname := ""
+		var max, min float64
+		for rows.Next() {
+			rows.Scan(&hostname, &max, &min)
+			fmt.Println(hostname, max, min)
 		}
 	}
 }

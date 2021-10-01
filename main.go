@@ -38,7 +38,7 @@ const (
 	GROUP BY host, DATE_TRUNC('minute', ts)`
 )
 
-type Report struct {
+type Stats struct {
 	count      int
 	totalTime  time.Duration
 	minTime    time.Duration
@@ -77,13 +77,13 @@ func main() {
 
 	fmt.Println(strings.Join(head, ", "))
 
-	report := &Report{}
+	stats := &Stats{}
 	minHeap := &MinHeap{}
 	maxHeap := &MaxHeap{}
 	heap.Init(minHeap)
 	heap.Init(maxHeap)
-	report.minHeap = minHeap
-	report.maxHeap = maxHeap
+	stats.minHeap = minHeap
+	stats.maxHeap = maxHeap
 
 	wg := &sync.WaitGroup{}
 	wg.Add(1)
@@ -91,18 +91,20 @@ func main() {
 	e := make(chan error)
 
 	go ReadRecords(reader, recs, e)
-	go DoQuery(ctx, conn, report, wg, recs, e)
+	go DoQuery(ctx, conn, stats, wg, recs, e)
 
 	wg.Wait()
 
-	// calculate median
-	min, max := minHeap.Pop().(time.Duration), maxHeap.Pop().(time.Duration)
+	// calculate median, average, min and max
+	min, max := heap.Pop(minHeap).(time.Duration), heap.Pop(maxHeap).(time.Duration)
+	stats.minTime, stats.maxTime = min, max
 	for min < max {
-		min, max = minHeap.Pop().(time.Duration), maxHeap.Pop().(time.Duration)
+		min, max = heap.Pop(minHeap).(time.Duration), heap.Pop(maxHeap).(time.Duration)
 	}
-	report.medianTime = (min + max) / 2
+	stats.medianTime = (min + max) / 2
+	stats.avgTime = time.Duration(int(stats.totalTime) / stats.count)
 
-	fmt.Printf("%+v\n", report)
+	fmt.Printf("%+v\n", stats)
 }
 
 func ReadRecords(reader *csv.Reader, out chan<- []string, e chan<- error) {
@@ -120,7 +122,7 @@ func ReadRecords(reader *csv.Reader, out chan<- []string, e chan<- error) {
 	close(e)
 }
 
-func DoQuery(ctx context.Context, conn *pgx.Conn, rep *Report, wg *sync.WaitGroup, recs <-chan []string, e chan<- error) {
+func DoQuery(ctx context.Context, conn *pgx.Conn, stats *Stats, wg *sync.WaitGroup, recs <-chan []string, e chan<- error) {
 	for rec := range recs {
 		start := time.Now()
 		_, err := conn.Query(ctx, q, rec[0], rec[1], rec[2])
@@ -128,28 +130,10 @@ func DoQuery(ctx context.Context, conn *pgx.Conn, rep *Report, wg *sync.WaitGrou
 			e <- fmt.Errorf("querying database: %s", err)
 		}
 		dur := time.Since(start)
-		heap.Push(rep.minHeap, dur)
-		heap.Push(rep.maxHeap, dur)
-
-		rep.count += 1
-		rep.totalTime += dur
-		rep.avgTime = time.Duration(int(rep.totalTime) / rep.count)
-		rep.minTime = minDuration(rep.minTime, dur)
-		rep.maxTime = maxDuration(rep.maxTime, dur)
+		heap.Push(stats.minHeap, dur)
+		heap.Push(stats.maxHeap, dur)
+		stats.count += 1
+		stats.totalTime += dur
 	}
 	wg.Done()
-}
-
-func minDuration(a, b time.Duration) time.Duration {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func maxDuration(a, b time.Duration) time.Duration {
-	if a > b {
-		return a
-	}
-	return b
 }

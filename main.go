@@ -18,7 +18,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v4"
+	"github.com/jackc/pgx/v4/pgxpool"
+	"github.com/serialx/hashring"
 )
 
 var (
@@ -36,9 +37,15 @@ const (
 	WHERE host = $1
 	AND ts BETWEEN $2 AND $3
 	GROUP BY host, DATE_TRUNC('minute', ts)`
+	workers = 5
+	zero    = 48 // byte value of '0'
 )
 
 type Stats struct {
+	ring    *hashring.HashRing
+	workers map[string]chan []string
+	mu      *sync.Mutex
+
 	count      int
 	totalTime  time.Duration
 	minTime    time.Duration
@@ -49,6 +56,45 @@ type Stats struct {
 	maxHeap    *MaxHeap
 }
 
+func NewStats(w int) *Stats {
+	nodes := make([]string, 0, w)
+	for i := 0; i < w; i++ {
+		nodes = append(nodes, string([]byte{zero + 1}))
+	}
+
+	minHeap := &MinHeap{}
+	maxHeap := &MaxHeap{}
+	heap.Init(minHeap)
+	heap.Init(maxHeap)
+
+	return &Stats{
+		ring:    hashring.New(nodes),
+		minHeap: minHeap,
+		maxHeap: maxHeap,
+	}
+}
+
+func (s *Stats) Route(in <-chan []string) {
+	for rec := range in {
+		host := rec[0]
+		key, ok := s.ring.GetNode(host)
+		if !ok {
+			// TODO(wperron) handle errors better
+			log.Fatalf("no nodes found in ring")
+		}
+
+		out, ok := s.workers[key]
+		if !ok {
+			s.mu.Lock()
+			out := make(chan []string)
+			s.workers[key] = out
+			s.mu.Unlock()
+		}
+
+		out <- rec
+	}
+}
+
 func main() {
 	flag.Parse()
 
@@ -56,11 +102,11 @@ func main() {
 
 	ctx := context.Background()
 
-	conn, err := pgx.Connect(ctx, connStr)
+	pool, err := pgxpool.Connect(ctx, connStr)
 	if err != nil {
 		log.Fatalf("connecting to TimescaleDB instance: %s", err)
 	}
-	defer conn.Close(ctx)
+	defer pool.Close()
 
 	fd, err := os.Open(*file)
 	if err != nil {
@@ -77,13 +123,7 @@ func main() {
 
 	fmt.Println(strings.Join(head, ", "))
 
-	stats := &Stats{}
-	minHeap := &MinHeap{}
-	maxHeap := &MaxHeap{}
-	heap.Init(minHeap)
-	heap.Init(maxHeap)
-	stats.minHeap = minHeap
-	stats.maxHeap = maxHeap
+	stats := NewStats(workers)
 
 	wg := &sync.WaitGroup{}
 	wg.Add(1)
@@ -91,15 +131,15 @@ func main() {
 	e := make(chan error)
 
 	go ReadRecords(reader, recs, e)
-	go DoQuery(ctx, conn, stats, wg, recs, e)
+	go DoQuery(ctx, pool, stats, wg, recs, e)
 
 	wg.Wait()
 
 	// calculate median, average, min and max
-	min, max := heap.Pop(minHeap).(time.Duration), heap.Pop(maxHeap).(time.Duration)
+	min, max := heap.Pop(stats.minHeap).(time.Duration), heap.Pop(stats.maxHeap).(time.Duration)
 	stats.minTime, stats.maxTime = min, max
 	for min < max {
-		min, max = heap.Pop(minHeap).(time.Duration), heap.Pop(maxHeap).(time.Duration)
+		min, max = heap.Pop(stats.minHeap).(time.Duration), heap.Pop(stats.maxHeap).(time.Duration)
 	}
 	stats.medianTime = (min + max) / 2
 	stats.avgTime = time.Duration(int(stats.totalTime) / stats.count)
@@ -122,7 +162,7 @@ func ReadRecords(reader *csv.Reader, out chan<- []string, e chan<- error) {
 	close(e)
 }
 
-func DoQuery(ctx context.Context, conn *pgx.Conn, stats *Stats, wg *sync.WaitGroup, recs <-chan []string, e chan<- error) {
+func DoQuery(ctx context.Context, conn *pgxpool.Conn, stats *Stats, wg *sync.WaitGroup, recs <-chan []string, e chan<- error) {
 	for rec := range recs {
 		start := time.Now()
 		_, err := conn.Query(ctx, q, rec[0], rec[1], rec[2])

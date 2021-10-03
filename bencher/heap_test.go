@@ -1,4 +1,4 @@
-package main
+package bencher
 
 import (
 	"container/heap"
@@ -7,7 +7,7 @@ import (
 )
 
 func TestMinHeap(t *testing.T) {
-	h := &MinHeap{}
+	h := &minHeap{}
 	heap.Init(h)
 
 	heap.Push(h, 1*time.Millisecond)
@@ -26,7 +26,7 @@ func TestMinHeap(t *testing.T) {
 }
 
 func TestMaxHeap(t *testing.T) {
-	h := &MaxHeap{}
+	h := &maxHeap{}
 	heap.Init(h)
 
 	heap.Push(h, 1*time.Millisecond)

@@ -6,7 +6,6 @@ package main
 // a single worker can handle multiple hosts
 
 import (
-	"container/heap"
 	"context"
 	"encoding/csv"
 	"flag"
@@ -14,12 +13,10 @@ import (
 	"io"
 	"log"
 	"os"
-	"strings"
-	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v4/pgxpool"
-	"github.com/serialx/hashring"
+	"github.com/wperron/timescaledb-bench/bencher"
 )
 
 var (
@@ -32,77 +29,17 @@ var (
 
 const (
 	pattern = "2006-01-02 15:04:05"
-	q       = `SELECT host, DATE_TRUNC('minute', ts), max(usage), min(usage)
-	FROM cpu_usage
-	WHERE host = $1
-	AND ts BETWEEN $2 AND $3
-	GROUP BY host, DATE_TRUNC('minute', ts)`
 	workers = 5
-	zero    = 48 // byte value of '0'
 )
-
-type Stats struct {
-	ring    *hashring.HashRing
-	workers map[string]chan []string
-	mu      *sync.Mutex
-
-	count      int
-	totalTime  time.Duration
-	minTime    time.Duration
-	maxTime    time.Duration
-	avgTime    time.Duration
-	medianTime time.Duration
-	minHeap    *MinHeap
-	maxHeap    *MaxHeap
-}
-
-func NewStats(w int) *Stats {
-	nodes := make([]string, 0, w)
-	for i := 0; i < w; i++ {
-		nodes = append(nodes, string([]byte{zero + 1}))
-	}
-
-	minHeap := &MinHeap{}
-	maxHeap := &MaxHeap{}
-	heap.Init(minHeap)
-	heap.Init(maxHeap)
-
-	return &Stats{
-		ring:    hashring.New(nodes),
-		minHeap: minHeap,
-		maxHeap: maxHeap,
-	}
-}
-
-func (s *Stats) Route(in <-chan []string) {
-	for rec := range in {
-		host := rec[0]
-		key, ok := s.ring.GetNode(host)
-		if !ok {
-			// TODO(wperron) handle errors better
-			log.Fatalf("no nodes found in ring")
-		}
-
-		out, ok := s.workers[key]
-		if !ok {
-			s.mu.Lock()
-			out := make(chan []string)
-			s.workers[key] = out
-			s.mu.Unlock()
-		}
-
-		out <- rec
-	}
-}
 
 func main() {
 	flag.Parse()
 
 	connStr := fmt.Sprintf("postgres://%s:%s@%s/%s", *user, *pwd, *host, *db)
-
 	ctx := context.Background()
+	timeout, _ := context.WithTimeout(ctx, 5*time.Second)
 
-	pool, err := pgxpool.Connect(ctx, connStr)
+	pool, err := pgxpool.Connect(timeout, connStr)
 	if err != nil {
 		log.Fatalf("connecting to TimescaleDB instance: %s", err)
 	}
@@ -116,64 +53,49 @@ func main() {
 	reader := csv.NewReader(fd)
 
 	// read the header row first to move reader's cursor to first record
-	head, err := reader.Read()
+	_, err = reader.Read()
 	if err != nil {
 		log.Fatalf("reading header row from csv: %s", err)
 	}
 
-	fmt.Println(strings.Join(head, ", "))
+	bencher := bencher.NewBencher(ctx, workers, pool)
+	recs := make(chan []string, 100)
+	e := make(chan error, 100)
 
-	stats := NewStats(workers)
-
-	wg := &sync.WaitGroup{}
-	wg.Add(1)
-	recs := make(chan []string)
-	e := make(chan error)
+	go func() {
+		for err := range e {
+			if err != nil {
+				log.Fatalln(err)
+			}
+		}
+	}()
 
 	go ReadRecords(reader, recs, e)
-	go DoQuery(ctx, pool, stats, wg, recs, e)
+	go bencher.RecvRecord(recs)
 
-	wg.Wait()
+	bencher.Wait()
 
-	// calculate median, average, min and max
-	min, max := heap.Pop(stats.minHeap).(time.Duration), heap.Pop(stats.maxHeap).(time.Duration)
-	stats.minTime, stats.maxTime = min, max
-	for min < max {
-		min, max = heap.Pop(stats.minHeap).(time.Duration), heap.Pop(stats.maxHeap).(time.Duration)
-	}
-	stats.medianTime = (min + max) / 2
-	stats.avgTime = time.Duration(int(stats.totalTime) / stats.count)
-
-	fmt.Printf("%+v\n", stats)
+	fmt.Printf("%+v\n", bencher.Stats())
 }
 
 func ReadRecords(reader *csv.Reader, out chan<- []string, e chan<- error) {
+	count := 0
 	for {
 		rec, err := reader.Read()
 		if err == io.EOF {
+			fmt.Println("EOF reached")
 			break
 		}
 		if err != nil {
 			e <- fmt.Errorf("reading record from csv: %s", err)
 		}
 		out <- rec
-	}
-	close(out)
-	close(e)
-}
+		count++
 
-func DoQuery(ctx context.Context, conn *pgxpool.Conn, stats *Stats, wg *sync.WaitGroup, recs <-chan []string, e chan<- error) {
-	for rec := range recs {
-		start := time.Now()
-		_, err := conn.Query(ctx, q, rec[0], rec[1], rec[2])
-		if err != nil {
-			e <- fmt.Errorf("querying database: %s", err)
-		}
-		dur := time.Since(start)
-		heap.Push(stats.minHeap, dur)
-		heap.Push(stats.maxHeap, dur)
-		stats.count += 1
-		stats.totalTime += dur
+		// if count%100 == 0 {
+		// 	fmt.Printf("read %d records\n", count)
+		// }
 	}
-	wg.Done()
+	// close(out)
+	// close(e)
 }

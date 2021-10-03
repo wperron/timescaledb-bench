@@ -7,7 +7,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/serialx/hashring"
 )
 
@@ -21,24 +20,31 @@ type Bencher struct {
 	ring    *hashring.HashRing
 	workers map[string]*Worker
 	mu      *sync.Mutex
-	pool    *pgxpool.Pool
 	times   chan time.Duration
 	stats   *Stats
 	errors  chan error
+	cs      string // copy of the connection string
 
 	done chan bool
 }
 
-func NewBencher(ctx context.Context, w int, p *pgxpool.Pool) *Bencher {
+// NewBencher creates a new instance of a Benchmark.
+// ctx contains the execution context to be passed to the Bencher's various parts
+// w is the number of workers to start concurrently
+// cs is the connection string to use
+func NewBencher(ctx context.Context, w int, cs string) (*Bencher, error) {
 	s := NewStats()
 	m := make(map[string]*Worker)
 	nodes := make([]string, 0, w)
-	times := make(chan time.Duration, 100)
+	times := make(chan time.Duration)
 	errors := make(chan error)
 	for i := 0; i < w; i++ {
 		key := string([]byte{byte(zero + i)})
 		nodes = append(nodes, key)
-		worker := NewWorker(p, key, times, errors)
+		worker, err := NewWorker(ctx, cs, key, times, errors)
+		if err != nil {
+			return nil, fmt.Errorf("creating worker instance: %s", err)
+		}
 		m[key] = worker
 	}
 
@@ -55,15 +61,16 @@ func NewBencher(ctx context.Context, w int, p *pgxpool.Pool) *Bencher {
 		ring:    hashring.New(nodes),
 		workers: m,
 		mu:      &sync.Mutex{},
-		pool:    p,
 		times:   times,
 		stats:   s,
 		errors:  errors,
+		cs:      cs,
+		done:    make(chan bool),
 	}
 
 	go b.recvTime()
 
-	return b
+	return b, nil
 }
 
 func (b *Bencher) Stats() Stats {
@@ -72,7 +79,6 @@ func (b *Bencher) Stats() Stats {
 
 func (b *Bencher) recvTime() {
 	for t := range b.times {
-		// fmt.Println(t)
 		b.stats.recv(t)
 	}
 
@@ -89,20 +95,23 @@ func (b *Bencher) RecvRecord(recs chan []string) {
 		}
 
 		if w, ok := b.workers[node]; ok {
-			// fmt.Println(rec)
 			w.in <- rec
 		} else {
 			fmt.Println("locking mutex")
 			b.mu.Lock()
-			w := NewWorker(b.pool, node, b.times, b.errors)
+			w, err := NewWorker(b.ctx, b.cs, node, b.times, b.errors)
+			if err != nil {
+				b.errors <- fmt.Errorf("creating worker instance on the fly: %s", err)
+				continue
+			}
 			b.workers[node] = w
 			b.mu.Unlock()
 			w.in <- rec
 		}
 	}
 
-	// close(b.times)
-	// close(b.errors)
+	close(b.times)
+	close(b.errors)
 }
 
 func (b *Bencher) Wait() {

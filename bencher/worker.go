@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v4/pgxpool"
+	"github.com/jackc/pgx/v4"
 )
 
 const (
@@ -21,31 +21,36 @@ type Worker struct {
 	in     chan []string
 	out    chan time.Duration
 	errors chan error
+	conn   *pgx.Conn
 }
 
-func NewWorker(p *pgxpool.Pool, id string, out chan time.Duration, errors chan error) *Worker {
+func NewWorker(ctx context.Context, cs string, id string, out chan time.Duration, errors chan error) (*Worker, error) {
 	in := make(chan []string)
+
+	conn, err := pgx.Connect(ctx, cs)
+	if err != nil {
+		return nil, fmt.Errorf("connecting to timescale instance: %s", err)
+	}
 
 	w := &Worker{
 		id:     id,
 		in:     in,
 		out:    out,
 		errors: errors,
+		conn:   conn,
 	}
 
-	go w.do(context.Background(), p)
+	go w.do(context.Background(), conn)
 
-	return w
+	return w, nil
 }
 
-func (w *Worker) do(ctx context.Context, p *pgxpool.Pool) {
+func (w *Worker) do(ctx context.Context, conn *pgx.Conn) {
 	for rec := range w.in {
 		timed, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 		start := time.Now()
-		fmt.Printf("[%s] starting query -> %v\n", w.id, rec)
-		_, err := p.Query(timed, q, rec[0], rec[1], rec[2])
-		fmt.Printf("[%s] query done\n", w.id)
+		_, err := conn.Query(timed, q, rec[0], rec[1], rec[2])
 		if err != nil {
 			w.errors <- fmt.Errorf("querying database: %s", err)
 			continue

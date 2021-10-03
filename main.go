@@ -13,9 +13,7 @@ import (
 	"io"
 	"log"
 	"os"
-	"time"
 
-	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/wperron/timescaledb-bench/bencher"
 )
 
@@ -37,13 +35,6 @@ func main() {
 
 	connStr := fmt.Sprintf("postgres://%s:%s@%s/%s", *user, *pwd, *host, *db)
 	ctx := context.Background()
-	timeout, _ := context.WithTimeout(ctx, 5*time.Second)
-
-	pool, err := pgxpool.Connect(timeout, connStr)
-	if err != nil {
-		log.Fatalf("connecting to TimescaleDB instance: %s", err)
-	}
-	defer pool.Close()
 
 	fd, err := os.Open(*file)
 	if err != nil {
@@ -58,9 +49,9 @@ func main() {
 		log.Fatalf("reading header row from csv: %s", err)
 	}
 
-	bencher := bencher.NewBencher(ctx, workers, pool)
-	recs := make(chan []string, 100)
-	e := make(chan error, 100)
+	bencher, err := bencher.NewBencher(ctx, workers, connStr)
+	recs := make(chan []string)
+	e := make(chan error)
 
 	go func() {
 		for err := range e {
@@ -92,10 +83,10 @@ func ReadRecords(reader *csv.Reader, out chan<- []string, e chan<- error) {
 		out <- rec
 		count++
 
-		// if count%100 == 0 {
-		// 	fmt.Printf("read %d records\n", count)
-		// }
+		if count%100 == 0 {
+			fmt.Printf("read %d records\n", count)
+		}
 	}
-	// close(out)
-	// close(e)
+	close(out)
+	close(e)
 }

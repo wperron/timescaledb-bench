@@ -22,6 +22,8 @@ type Worker struct {
 	out    chan time.Duration
 	errors chan error
 	conn   *pgx.Conn
+
+	done bool
 }
 
 func NewWorker(ctx context.Context, cs string, id string, out chan time.Duration, errors chan error) (*Worker, error) {
@@ -58,4 +60,6 @@ func (w *Worker) do(ctx context.Context, conn *pgx.Conn) {
 		dur := time.Since(start)
 		w.out <- dur
 	}
+
+	w.done = true
 }

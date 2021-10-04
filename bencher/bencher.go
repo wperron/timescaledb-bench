@@ -110,6 +110,21 @@ func (b *Bencher) RecvRecord(recs chan []string) {
 		}
 	}
 
+	for _, w := range b.workers {
+		close(w.in)
+	}
+
+	working := true
+	for working {
+		working = false
+		for _, w := range b.workers {
+			if !w.done {
+				working = true
+				break
+			}
+		}
+	}
+
 	close(b.times)
 	close(b.errors)
 }

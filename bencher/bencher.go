@@ -123,6 +123,7 @@ func (b *Bencher) RecvRecord(recs chan []string) {
 				break
 			}
 		}
+		time.Sleep(time.Millisecond)
 	}
 
 	close(b.times)

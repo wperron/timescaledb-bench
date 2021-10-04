@@ -2,6 +2,7 @@ package bencher
 
 import (
 	"container/heap"
+	"fmt"
 	"time"
 )
 
@@ -33,6 +34,17 @@ func (s *Stats) recv(d time.Duration) {
 	heap.Push(s.maxHeap, d)
 	s.Count += 1
 	s.TotalTime += d
+}
+
+func (s Stats) String() string {
+	str := ""
+	str += fmt.Sprintf("total number of queries: %d\n", s.Count)
+	str += fmt.Sprintf("total time spent: %s\n", s.TotalTime.String())
+	str += fmt.Sprintf("maximum query time: %s\n", s.MaxTime.String())
+	str += fmt.Sprintf("minimum query time: %s\n", s.MinTime.String())
+	str += fmt.Sprintf("average query time: %s\n", s.AvgTime.String())
+	str += fmt.Sprintf("median query time: %s\n", s.MedianTime.String())
+	return str
 }
 
 func (s *Stats) calculate() {

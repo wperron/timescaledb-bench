@@ -66,26 +66,19 @@ func main() {
 
 	bencher.Wait()
 
-	fmt.Printf("%+v\n", bencher.Stats())
+	fmt.Print(bencher.Stats())
 }
 
 func ReadRecords(reader *csv.Reader, out chan<- []string, e chan<- error) {
-	count := 0
 	for {
 		rec, err := reader.Read()
 		if err == io.EOF {
-			fmt.Println("EOF reached")
 			break
 		}
 		if err != nil {
 			e <- fmt.Errorf("reading record from csv: %s", err)
 		}
 		out <- rec
-		count++
-
-		if count%100 == 0 {
-			fmt.Printf("read %d records\n", count)
-		}
 	}
 	close(out)
 	close(e)

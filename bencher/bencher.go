@@ -10,10 +10,6 @@ import (
 	"github.com/serialx/hashring"
 )
 
-const (
-	zero = 48 // byte value of '0'
-)
-
 type Bencher struct {
 	ctx context.Context
 
@@ -39,7 +35,7 @@ func NewBencher(ctx context.Context, w int, cs string) (*Bencher, error) {
 	times := make(chan time.Duration)
 	errors := make(chan error)
 	for i := 0; i < w; i++ {
-		key := string([]byte{byte(zero + i)})
+		key := fmt.Sprint(i)
 		nodes = append(nodes, key)
 		worker, err := NewWorker(ctx, cs, key, times, errors)
 		if err != nil {

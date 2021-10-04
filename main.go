@@ -18,16 +18,12 @@ import (
 )
 
 var (
-	host = flag.String("host", "", "TimescaleDB hostname and port number")
-	user = flag.String("user", "", "TimescaleDB username")
-	pwd  = flag.String("password", "", "TimescaleSB password")
-	db   = flag.String("db", "", "TimescaleDB database name")
-	file = flag.String("file", "", "Filename containing the query parameters")
-)
-
-const (
-	pattern = "2006-01-02 15:04:05"
-	workers = 5
+	host    = flag.String("host", "", "TimescaleDB hostname and port number")
+	user    = flag.String("user", "", "TimescaleDB username")
+	pwd     = flag.String("password", "", "TimescaleSB password")
+	db      = flag.String("db", "", "TimescaleDB database name")
+	file    = flag.String("file", "", "Filename containing the query parameters")
+	workers = flag.Int("workers", 1, "Number of concurrent workers, defaults to 1")
 )
 
 func main() {
@@ -49,7 +45,7 @@ func main() {
 		log.Fatalf("reading header row from csv: %s", err)
 	}
 
-	bencher, err := bencher.NewBencher(ctx, workers, connStr)
+	bencher, err := bencher.NewBencher(ctx, *workers, connStr)
 	recs := make(chan []string)
 	e := make(chan error)
 
